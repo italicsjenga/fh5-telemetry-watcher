@@ -165,6 +165,7 @@ fn main() {
     fs::create_dir_all(folder_path).expect("couldnt create log directory!");
 
     let socket = UdpSocket::bind(ip).expect("couldnt bind");
+    println!("Listening on port {}", args.port);
     let mut buf = [0; 500];
 
     let mut writer = csv::Writer::from_writer(tempfile().expect("couldnt open tempfile"));
