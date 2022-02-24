@@ -143,12 +143,23 @@ struct Telemetry {
     normalized_ai_brake_difference: i8,
 }
 
+struct Status {
+    inrace: bool,
+    position: u8,
+}
+
 fn listen(socket: &net::UdpSocket, mut buffer: &mut [u8]) -> usize {
     let number_of_bytes = match socket.recv_from(&mut buffer) {
         Ok((num, _)) => num,
         // skip packets if they're too big
-        Err(_) => 0,
+        Err(e) => {
+            println!("Network error: {}", e);
+            0
+        }
     };
+    // if number_of_bytes != 324 {
+    //     println!("Big packet: {} bytes", number_of_bytes);
+    // }
     number_of_bytes
 }
 
@@ -166,11 +177,14 @@ fn main() {
 
     let socket = UdpSocket::bind(ip).expect("couldnt bind");
     println!("Listening on port {}", args.port);
-    let mut buf = [0; 500];
+    let mut buf = [0; 2048];
 
     let mut writer = csv::Writer::from_writer(tempfile().expect("couldnt open tempfile"));
 
-    let mut inrace = false;
+    let mut status = Status {
+        inrace: false,
+        position: 0,
+    };
 
     'listener: while listen(&socket, &mut buf) != 0 {
         let deserialised: Telemetry = bincode::deserialize(&buf).expect("error parsing packet");
@@ -179,10 +193,15 @@ fn main() {
         }
         if args.verbose {}
 
-        if inrace {
+        if status.position != deserialised.race_position {
+            status.position = deserialised.race_position;
+            println!("now position {}", status.position);
+        }
+
+        if status.inrace {
             if deserialised.race_position == 0 {
                 // coming out of race
-                inrace = false;
+                status.inrace = false;
                 writer.flush().expect("couldnt flush to file");
                 println!(
                     "{}: no longer in race",
@@ -195,7 +214,7 @@ fn main() {
         } else {
             if deserialised.race_position > 0 {
                 // getting into race
-                inrace = true;
+                status.inrace = true;
                 println!(
                     "{}: entering race",
                     &Local::now().format("%H:%M:%S").to_string()
