@@ -1,4 +1,3 @@
-extern crate fh5_common;
 use fh5_common::Telemetry;
 
 use std::fs::OpenOptions;
