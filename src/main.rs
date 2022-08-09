@@ -160,9 +160,6 @@ fn listen(socket: &net::UdpSocket, mut buffer: &mut [u8]) -> usize {
             0
         }
     };
-    // if number_of_bytes != 324 {
-    //     println!("Big packet: {} bytes", number_of_bytes);
-    // }
     number_of_bytes
 }
 
