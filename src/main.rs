@@ -1,4 +1,7 @@
+use std::fs::OpenOptions;
 use std::net::UdpSocket;
+#[cfg(target_family = "unix")]
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
 use std::{fs, net};
 
@@ -191,11 +194,12 @@ fn main() {
         if deserialised.is_race_on == 0 {
             continue 'listener;
         }
-        if args.verbose {}
 
         if status.position != deserialised.race_position {
             status.position = deserialised.race_position;
-            println!("now position {}", status.position);
+            if args.verbose {
+                println!("now position {}", status.position);
+            }
         }
 
         if status.inrace {
@@ -203,10 +207,12 @@ fn main() {
                 // coming out of race
                 status.inrace = false;
                 writer.flush().expect("couldnt flush to file");
-                println!(
-                    "{}: no longer in race",
-                    &Local::now().format("%H:%M:%S").to_string()
-                );
+                if args.verbose {
+                    println!(
+                        "{}: no longer in race",
+                        &Local::now().format("%H:%M:%S").to_string()
+                    );
+                }
                 continue 'listener;
             } else {
                 // still in race
@@ -215,22 +221,30 @@ fn main() {
             if deserialised.race_position > 0 {
                 // getting into race
                 status.inrace = true;
-                println!(
-                    "{}: entering race",
-                    &Local::now().format("%H:%M:%S").to_string()
-                );
-                println!("car class: {}", deserialised.car_performance_index);
+                if args.verbose {
+                    println!(
+                        "{}: entering race",
+                        &Local::now().format("%H:%M:%S").to_string()
+                    );
+                    println!("car class: {}", deserialised.car_performance_index);
+                }
+                let mut options = OpenOptions::new().write(true).create_new(true).clone();
+                // open file with wide open permissions on unix systems
+                if cfg!(target_family = "unix") {
+                    options.mode(0o777);
+                }
                 // open file for this race
                 // filename format: timestamp _ car class _ car ordinal
                 writer = csv::Writer::from_writer(
-                    fs::File::create(folder_path.join(format!(
-                        "{}_{}_{}{}",
-                        &Local::now().format("%Y-%m-%d_%H-%M").to_string(),
-                        deserialised.car_performance_index,
-                        deserialised.car_ordinal,
-                        ".csv",
-                    )))
-                    .expect("couldnt open file"),
+                    options
+                        .open(folder_path.join(format!(
+                            "{}_{}_{}{}",
+                            &Local::now().format("%Y-%m-%d_%H-%M").to_string(),
+                            deserialised.car_performance_index,
+                            deserialised.car_ordinal,
+                            ".csv",
+                        )))
+                        .expect("couldnt open file"),
                 );
             } else {
                 // still not in race
