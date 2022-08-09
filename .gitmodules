@@ -1,0 +1,3 @@
+[submodule "fh5-common"]
+	path = fh5-common
+	url = g://italicsjenga/fh5-common

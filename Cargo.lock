@@ -127,6 +127,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "fh5-common"
+version = "0.1.0"
+dependencies = [
+ "serde",
+]
+
+[[package]]
 name = "hashbrown"
 version = "0.11.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -335,6 +342,7 @@ dependencies = [
  "chrono",
  "clap",
  "csv",
+ "fh5-common",
  "serde",
  "tempfile",
 ]
