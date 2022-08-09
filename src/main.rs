@@ -1,4 +1,4 @@
-use fh5_common::Telemetry;
+use fh5_common::{Filename, Telemetry};
 
 use std::fs::OpenOptions;
 use std::net::UdpSocket;
@@ -111,15 +111,13 @@ fn main() {
                 }
                 // open file for this race
                 // filename format: timestamp _ car class _ car ordinal
+                let name = Filename::new_filename(
+                    deserialised.car_performance_index,
+                    deserialised.car_ordinal,
+                );
                 writer = csv::Writer::from_writer(
                     options
-                        .open(folder_path.join(format!(
-                            "{}_{}_{}{}",
-                            &Local::now().format("%Y-%m-%d_%H-%M").to_string(),
-                            deserialised.car_performance_index,
-                            deserialised.car_ordinal,
-                            ".csv",
-                        )))
+                        .open(folder_path.join(format!("{}{}", name.get_string(), ".csv",)))
                         .expect("couldnt open file"),
                 );
             } else {
