@@ -5,6 +5,7 @@ After=network-online.target
 [Service]
 Type=simple
 UMask=007
+User=forza
 
 ExecStart=/var/lib/forza/telemetry -v -f /var/lib/forza/logs
 
