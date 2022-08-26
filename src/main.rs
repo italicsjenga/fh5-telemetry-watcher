@@ -1,6 +1,7 @@
 use fh5_common::{Filename, Telemetry};
 
 use std::fs::OpenOptions;
+use std::io::Write;
 use std::net::UdpSocket;
 #[cfg(target_family = "unix")]
 use std::os::unix::fs::OpenOptionsExt;
@@ -10,7 +11,14 @@ use std::{fs, net};
 use bincode;
 use chrono::Local;
 use clap::Parser;
-use tempfile::tempfile;
+
+macro_rules! verbose_print {
+	($args:expr, $($tts:tt)*) => {
+		if($args.verbose) {
+			println!($($tts)*);
+		}
+	};
+}
 
 #[derive(Parser, Debug)]
 #[clap(author, version, about, long_about = None)]
@@ -26,8 +34,13 @@ struct Args {
 }
 
 struct Status {
-    inrace: bool,
+    next: Option<NextFile>,
     position: u8,
+}
+
+struct NextFile {
+    writer: csv::Writer<Vec<u8>>,
+    name: Filename,
 }
 
 fn listen(socket: &net::UdpSocket, mut buffer: &mut [u8]) -> usize {
@@ -45,7 +58,11 @@ fn listen(socket: &net::UdpSocket, mut buffer: &mut [u8]) -> usize {
 fn main() {
     let args = Args::parse();
     let ip = format!("0.0.0.0:{}", args.port.to_string());
-
+    verbose_print!(
+        args,
+        "{}: Starting server",
+        &Local::now().format("%H:%M:%S").to_string()
+    );
     if args.folder != "" {
         println!("Saving logs to {}", args.folder);
     } else {
@@ -58,13 +75,11 @@ fn main() {
     println!("Listening on port {}", args.port);
     let mut buf = [0; 2048];
 
-    let mut writer = csv::Writer::from_writer(tempfile().expect("couldnt open tempfile"));
-
+    // let mut writer = csv::Writer::from_writer(tempfile().expect("couldnt open tempfile"));
     let mut status = Status {
-        inrace: false,
+        next: None,
         position: 0,
     };
-
     'listener: while listen(&socket, &mut buf) != 0 {
         let deserialised: Telemetry = bincode::deserialize(&buf).expect("error parsing packet");
         if deserialised.is_race_on == 0 {
@@ -73,58 +88,63 @@ fn main() {
 
         if status.position != deserialised.race_position {
             status.position = deserialised.race_position;
-            if args.verbose {
-                println!("now position {}", status.position);
+            verbose_print!(args, "now position {}", status.position);
+        }
+        // status.next.
+        if deserialised.race_position == 0 {
+            status.next.take().and_then(|next| -> Option<NextFile> {
+                verbose_print!(
+                    args,
+                    "{}: no longer in race",
+                    &Local::now().format("%H:%M:%S").to_string()
+                );
+                finish_race(&args, next);
+                None
+            });
+        }
+        match status.next {
+            Some(ref mut next) => {
+                continue_race(&deserialised, &mut next.writer);
+            }
+            None => {
+                if deserialised.race_position > 0 {
+                    verbose_print!(
+                        args,
+                        "{}: entering race\ncar class: {}",
+                        &Local::now().format("%H:%M:%S").to_string(),
+                        deserialised.car_performance_index
+                    );
+                    let mut new_next = begin_race(&deserialised);
+                    continue_race(&deserialised, &mut new_next.writer);
+                    status.next = Some(new_next);
+                }
             }
         }
-
-        if status.inrace {
-            if deserialised.race_position == 0 {
-                // coming out of race
-                status.inrace = false;
-                writer.flush().expect("couldnt flush to file");
-                if args.verbose {
-                    println!(
-                        "{}: no longer in race",
-                        &Local::now().format("%H:%M:%S").to_string()
-                    );
-                }
-                continue 'listener;
-            } else {
-                // still in race
-            }
-        } else {
-            if deserialised.race_position > 0 {
-                // getting into race
-                status.inrace = true;
-                if args.verbose {
-                    println!(
-                        "{}: entering race",
-                        &Local::now().format("%H:%M:%S").to_string()
-                    );
-                    println!("car class: {}", deserialised.car_performance_index);
-                }
-                let mut options = OpenOptions::new().write(true).create_new(true).clone();
-                // open file with wide open permissions on unix systems
-                if cfg!(target_family = "unix") {
-                    options.mode(0o777);
-                }
-                // open file for this race
-                // filename format: timestamp _ car class _ car ordinal
-                let name = Filename::new_filename(
-                    deserialised.car_performance_index,
-                    deserialised.car_ordinal,
-                );
-                writer = csv::Writer::from_writer(
-                    options
-                        .open(folder_path.join(format!("{}{}", name.get_string(), ".csv",)))
-                        .expect("couldnt open file"),
-                );
-            } else {
-                // still not in race
-                continue 'listener;
-            }
-        }
-        writer.serialize(deserialised).expect("couldnt serialise");
     }
+}
+
+fn begin_race(deserialised: &Telemetry) -> NextFile {
+    NextFile {
+        writer: csv::Writer::from_writer(vec![]),
+        name: Filename::new_filename(deserialised.car_performance_index, deserialised.car_ordinal),
+    }
+}
+
+fn finish_race(args: &Args, next: NextFile) {
+    let mut options = OpenOptions::new().write(true).create_new(true).clone();
+    // open file with wide open permissions on unix systems
+    if cfg!(target_family = "unix") {
+        options.mode(0o777);
+    }
+    // open file for this race
+    let filename = format!("{}/{}.csv", args.folder, next.name.get_string());
+    verbose_print!(args, "Opening file {}", filename);
+    let mut filewriter = options.open(filename).expect("failed to open file");
+    let a = next.writer.into_inner().unwrap();
+    filewriter.write_all(&a).unwrap();
+    filewriter.flush().expect("could not flush file");
+}
+
+fn continue_race(deserialised: &Telemetry, writer: &mut csv::Writer<Vec<u8>>) {
+    writer.serialize(deserialised).expect("couldnt serialise");
 }
