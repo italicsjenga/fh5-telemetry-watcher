@@ -1,16 +1,18 @@
 use fh5_common::{Filename, Telemetry};
-
+#[macro_use]
+extern crate rocket;
+use bincode;
+use chrono::Local;
+use clap::Parser;
+use rocket::State;
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::net::UdpSocket;
 #[cfg(target_family = "unix")]
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
+use std::sync::{Arc, Mutex};
 use std::{fs, net};
-
-use bincode;
-use chrono::Local;
-use clap::Parser;
 
 macro_rules! verbose_print {
 	($args:expr, $($tts:tt)*) => {
@@ -55,72 +57,106 @@ fn listen(socket: &net::UdpSocket, mut buffer: &mut [u8]) -> usize {
     number_of_bytes
 }
 
-fn main() {
+struct DataStruct {
+    data: Arc<Mutex<[f32; 3]>>,
+}
+
+#[rocket::main]
+async fn main() {
     let args = Args::parse();
     let ip = format!("0.0.0.0:{}", args.port.to_string());
-    verbose_print!(
-        args,
-        "{}: Starting server",
-        &Local::now().format("%H:%M:%S").to_string()
-    );
-    if args.folder != "" {
-        println!("Saving logs to {}", args.folder);
-    } else {
-        println!("No folder specified - saving to current directory");
-    }
-    let folder_path = Path::new(&args.folder);
-    fs::create_dir_all(folder_path).expect("couldnt create log directory!");
 
-    let socket = UdpSocket::bind(ip).expect("couldnt bind");
-    println!("Listening on port {}", args.port);
-    let mut buf = [0; 2048];
+    let data = Arc::new(Mutex::new([0. as f32, 0. as f32, 0. as f32]));
+    let data_for_thread = data.clone();
 
-    // let mut writer = csv::Writer::from_writer(tempfile().expect("couldnt open tempfile"));
-    let mut status = Status {
-        next: None,
-        position: 0,
-    };
-    'listener: while listen(&socket, &mut buf) != 0 {
-        let deserialised: Telemetry = bincode::deserialize(&buf).expect("error parsing packet");
-        if deserialised.is_race_on == 0 {
-            continue 'listener;
+    let _listener = std::thread::spawn(move || {
+        let mut data = data_for_thread.lock().unwrap();
+        data[0] = 1.;
+        data[1] = 2.;
+        data[2] = 3.;
+        drop(data);
+        verbose_print!(
+            args,
+            "{}: Starting server",
+            &Local::now().format("%H:%M:%S").to_string()
+        );
+        if args.folder != "" {
+            println!("Saving logs to {}", args.folder);
+        } else {
+            println!("No folder specified - saving to current directory");
         }
+        let folder_path = Path::new(&args.folder);
+        fs::create_dir_all(folder_path).expect("couldnt create log directory!");
 
-        if status.position != deserialised.race_position {
-            status.position = deserialised.race_position;
-            verbose_print!(args, "now position {}", status.position);
-        }
-        // status.next.
-        if deserialised.race_position == 0 {
-            status.next.take().and_then(|next| -> Option<NextFile> {
-                verbose_print!(
-                    args,
-                    "{}: no longer in race",
-                    &Local::now().format("%H:%M:%S").to_string()
-                );
-                finish_race(&args, next);
-                None
-            });
-        }
-        match status.next {
-            Some(ref mut next) => {
-                continue_race(&deserialised, &mut next.writer);
+        let socket = UdpSocket::bind(ip).expect("couldnt bind");
+        println!("Listening on port {}", args.port);
+        let mut buf = [0; 2048];
+
+        // let mut writer = csv::Writer::from_writer(tempfile().expect("couldnt open tempfile"));
+        let mut status = Status {
+            next: None,
+            position: 0,
+        };
+
+        'listener: while listen(&socket, &mut buf) != 0 {
+            let deserialised: Telemetry = bincode::deserialize(&buf).expect("error parsing packet");
+            if deserialised.is_race_on == 0 {
+                continue 'listener;
             }
-            None => {
-                if deserialised.race_position > 0 {
+
+            if status.position != deserialised.race_position {
+                status.position = deserialised.race_position;
+                verbose_print!(args, "now position {}", status.position);
+            }
+            let mut data = data_for_thread.lock().unwrap();
+            data[0] = deserialised.position_x;
+            data[1] = deserialised.position_y;
+            data[2] = deserialised.position_z;
+            drop(data);
+
+            // status.next.
+            if deserialised.race_position == 0 {
+                status.next.take().and_then(|next| -> Option<NextFile> {
                     verbose_print!(
                         args,
-                        "{}: entering race\ncar class: {}",
-                        &Local::now().format("%H:%M:%S").to_string(),
-                        deserialised.car_performance_index
+                        "{}: no longer in race",
+                        &Local::now().format("%H:%M:%S").to_string()
                     );
-                    let mut new_next = begin_race(&deserialised);
-                    continue_race(&deserialised, &mut new_next.writer);
-                    status.next = Some(new_next);
+                    finish_race(&args, next);
+                    None
+                });
+            }
+            match status.next {
+                Some(ref mut next) => {
+                    continue_race(&deserialised, &mut next.writer);
+                }
+                None => {
+                    if deserialised.race_position > 0 {
+                        verbose_print!(
+                            args,
+                            "{}: entering race\ncar class: {}",
+                            &Local::now().format("%H:%M:%S").to_string(),
+                            deserialised.car_performance_index
+                        );
+                        let mut new_next = begin_race(&deserialised);
+                        continue_race(&deserialised, &mut new_next.writer);
+                        status.next = Some(new_next);
+                    }
                 }
             }
         }
-    }
+    });
+    let _result = rocket::custom(rocket::Config::figment().merge(("port", 1111)))
+        .mount("/", routes![index])
+        .manage(DataStruct { data })
+        .launch()
+        .await;
+}
+
+#[get("/")]
+fn index(data: &State<DataStruct>) -> String {
+    let get = data.data.lock().unwrap();
+    format!("x: {}, y: {}, z: {}", get[0], get[1], get[2])
 }
 
 fn begin_race(deserialised: &Telemetry) -> NextFile {
