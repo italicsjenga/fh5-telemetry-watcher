@@ -2,6 +2,7 @@ use fh5_common::{Filename, Telemetry};
 
 use std::fs::OpenOptions;
 use std::io::Write;
+use std::mem::size_of;
 use std::net::UdpSocket;
 #[cfg(target_family = "unix")]
 use std::os::unix::fs::OpenOptionsExt;
@@ -43,7 +44,7 @@ struct NextFile {
     name: Filename,
 }
 
-fn listen(socket: &net::UdpSocket, mut buffer: &mut [u8]) -> usize {
+fn listen(socket: &net::UdpSocket, mut buffer: &mut [u8], last_size: &mut usize) -> usize {
     let number_of_bytes = match socket.recv_from(&mut buffer) {
         Ok((num, _)) => num,
         // skip packets if they're too big
@@ -52,6 +53,7 @@ fn listen(socket: &net::UdpSocket, mut buffer: &mut [u8]) -> usize {
             0
         }
     };
+    *last_size = number_of_bytes;
     number_of_bytes
 }
 
@@ -61,18 +63,18 @@ fn main() {
     verbose_print!(
         args,
         "{}: Starting server",
-        &Local::now().format("%H:%M:%S").to_string()
+        &Local::now().format("%A %e %B - %H:%M:%S").to_string()
     );
     if args.folder != "" {
-        println!("Saving logs to {}", args.folder);
+        println!("    Saving logs to {}", args.folder);
     } else {
-        println!("No folder specified - saving to current directory");
+        println!("    No folder specified - saving to current directory");
     }
     let folder_path = Path::new(&args.folder);
     fs::create_dir_all(folder_path).expect("couldnt create log directory!");
 
     let socket = UdpSocket::bind(ip).expect("couldnt bind");
-    println!("Listening on port {}", args.port);
+    println!("    Listening on port {}", args.port);
     let mut buf = [0; 2048];
 
     // let mut writer = csv::Writer::from_writer(tempfile().expect("couldnt open tempfile"));
@@ -80,7 +82,11 @@ fn main() {
         next: None,
         position: 0,
     };
-    'listener: while listen(&socket, &mut buf) != 0 {
+    let mut last_size = 0;
+    'listener: while listen(&socket, &mut buf, &mut last_size) != 0 {
+        if last_size != size_of::<Telemetry>() {
+            continue 'listener;
+        }
         let deserialised: Telemetry = bincode::deserialize(&buf).expect("error parsing packet");
         if deserialised.is_race_on == 0 {
             continue 'listener;
@@ -88,7 +94,6 @@ fn main() {
 
         if status.position != deserialised.race_position {
             status.position = deserialised.race_position;
-            verbose_print!(args, "now position {}", status.position);
         }
         // status.next.
         if deserialised.race_position == 0 {
@@ -96,7 +101,7 @@ fn main() {
                 verbose_print!(
                     args,
                     "{}: no longer in race",
-                    &Local::now().format("%H:%M:%S").to_string()
+                    &Local::now().format("%A %e %B - %H:%M:%S").to_string()
                 );
                 finish_race(&args, next);
                 None
@@ -110,9 +115,8 @@ fn main() {
                 if deserialised.race_position > 0 {
                     verbose_print!(
                         args,
-                        "{}: entering race\ncar class: {}",
-                        &Local::now().format("%H:%M:%S").to_string(),
-                        deserialised.car_performance_index
+                        "{}: entering race",
+                        &Local::now().format("%A %e %B - %H:%M:%S").to_string()
                     );
                     let mut new_next = begin_race(&deserialised);
                     continue_race(&deserialised, &mut new_next.writer);
@@ -138,11 +142,17 @@ fn finish_race(args: &Args, next: NextFile) {
     }
     // open file for this race
     let filename = format!("{}/{}.csv", args.folder, next.name.get_string());
-    verbose_print!(args, "Opening file {}", filename);
-    let mut filewriter = options.open(filename).expect("failed to open file");
-    let a = next.writer.into_inner().unwrap();
-    filewriter.write_all(&a).unwrap();
-    filewriter.flush().expect("could not flush file");
+    verbose_print!(args, "    Opening file {}", filename);
+    match options.open(filename) {
+        Ok(mut filewriter) => {
+            let a = next.writer.into_inner().unwrap();
+            filewriter.write_all(&a).unwrap();
+            filewriter.flush().expect("could not flush file");
+        }
+        Err(e) => {
+            println!("    Error opening file: {}", e);
+        }
+    }
 }
 
 fn continue_race(deserialised: &Telemetry, writer: &mut csv::Writer<Vec<u8>>) {
