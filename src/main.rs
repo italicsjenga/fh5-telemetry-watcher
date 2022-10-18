@@ -1,8 +1,8 @@
-use fh5_common::{Filename, Telemetry};
+use fh5_common::{is_position_equal, Filename, Telemetry};
 
 use std::fs::OpenOptions;
 use std::io::Write;
-use std::mem::size_of;
+use std::mem::{size_of, swap};
 use std::net::UdpSocket;
 #[cfg(target_family = "unix")]
 use std::os::unix::fs::OpenOptionsExt;
@@ -42,6 +42,8 @@ struct Status {
 struct NextFile {
     writer: csv::Writer<Vec<u8>>,
     name: Filename,
+    initial: Telemetry,
+    last_race_time: f32,
 }
 
 fn listen(socket: &net::UdpSocket, mut buffer: &mut [u8], last_size: &mut usize) -> usize {
@@ -109,6 +111,24 @@ fn main() {
         }
         match status.next {
             Some(ref mut next) => {
+                if deserialised.current_race_time < next.last_race_time
+                    && deserialised.current_race_time < 1.
+                {
+                    if is_position_equal(&next.initial, &deserialised, 1.) {
+                        // then it's just rewound to the start
+                    } else {
+                        // new race
+                        verbose_print!(
+                            args,
+                            "{}: back to back race",
+                            &Local::now().format("%A %e %B - %H:%M:%S").to_string()
+                        );
+                        let mut new = begin_race(&deserialised);
+                        swap(next, &mut new);
+                        finish_race(&args, new);
+                    }
+                }
+                next.last_race_time = deserialised.current_race_time;
                 continue_race(&deserialised, &mut next.writer);
             }
             None => {
@@ -131,6 +151,8 @@ fn begin_race(deserialised: &Telemetry) -> NextFile {
     NextFile {
         writer: csv::Writer::from_writer(vec![]),
         name: Filename::new_filename(deserialised.car_performance_index, deserialised.car_ordinal),
+        initial: deserialised.clone(),
+        last_race_time: deserialised.current_race_time,
     }
 }
 
